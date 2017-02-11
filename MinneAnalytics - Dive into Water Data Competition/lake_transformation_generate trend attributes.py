@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 '''
 These functions can generate variables related to the trends of lake data
 '''
