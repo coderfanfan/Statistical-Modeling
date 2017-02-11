@@ -1,0 +1,263 @@
+---
+title: "Evaluating Property Values's Effect on Water Quality Using Panel Data"
+output: html_document
+author: Yurong Fan
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Preperation
+```{r, echo = FALSE}
+setwd('C:/Users/Fanfan/Desktop/Water/data')
+lakeNeighbor = read.csv("allLakeNeighborhood_panel_dt_v6_1000_TP.csv")
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(plm)
+
+#merge with external data 
+lake_metadata = read.csv('lake_metadata.csv',stringsAsFactors=FALSE)
+lakeNeighbor = left_join( lakeNeighbor, lake_metadata, by = c("pw_MCES_Map_Code1" = "DNR_ID_SITE_NUMBER"))
+weather = read.csv('weather.csv',stringsAsFactors=FALSE)
+lakeNeighbor = left_join( lakeNeighbor, weather, by = c("COUNTY", "p_year" = "YEAR" ))
+
+#select useful columns
+lakeNeighbor = lakeNeighbor%>%
+  select(LAKE_NAME, p_year, MAJOR_WATERSHED, COUNTY, EMVTotal, EMV_Total_res, EMV_Total_com, EMV_Total_ind, EMV_Total_agr, EMV_Total_agr, EMV_Total_sch, EMV_Total_hos, EMV_Total_fed, EMV_Total_greenN, EMV_Total_greenY, avgTP, avgDepth, avgGrade, avgRec, PRCP,nearwinter_snow, pw_MCES_Map_Code1)
+
+lakeNeighbor$entity = as.factor(lakeNeighbor$pw_MCES_Map_Code1)
+lakeNeighbor$year = as.factor(lakeNeighbor$p_year)
+
+#create lagged term of the target variable 
+lakeNeighbor = lakeNeighbor %>%
+  group_by(entity) %>%
+  mutate(avgTP_lag = lag(avgTP, 1))%>%
+  mutate(avgDepth_lag = lag(avgDepth, 1))%>%
+  mutate(avgGrade_lag = lag(avgGrade, 1))%>%
+  mutate(avgRec_lag = lag(avgRec, 1))
+attach(lakeNeighbor)
+```
+
+#Data Summary
+```{r}
+#non-zero rows by attributs
+colSums(lakeNeighbor != 0)
+```
+residential, commercial, argriculture has more non-zero rows
+industrial and school has some non-zero rows, others user type has too few oberservations 
+
+```{r}
+cor(cbind(EMVTotal_w, EMV_Total_agr, EMV_Total_res, EMV_Total_com, EMV_Total_ind, EMV_Total_greenN, EMV_Total_greenY), use = "pairwise.complete.obs")
+```
+EMV_Total_greenN and EMVTotal, 
+EMV_Total_greenY and EMV_Total_agr,
+EMVLand, EMVBldg and EMVTotal,
+EMVLand_sqt, EMVTotal_sqt,
+EMV_Total_greenN and EMVBldg,
+counts and EMVTotal, EMVLand, EMVBuilding,
+has high correlation.
+
+
+# Cleaning outliers
+```{r}
+#plot distribution
+ggplot(lakeNeighbor, aes(EMVTotal_w)) + geom_density()
+ggplot(lakeNeighbor, aes(EMV_Total_agr)) + geom_density()
+ggplot(lakeNeighbor, aes(avgTP)) + geom_density()
+ggplot(lakeNeighbor, aes(PRCP)) + geom_density()
+ggplot(lakeNeighbor, aes(nearwinter_snow)) + geom_density()
+
+#clear outliers
+outlierReplace = function(dataframe, cols, rows, newValue = NA) {
+  if (any(rows)) {
+    set(dataframe, rows, cols, newValue)
+  }
+}
+lakeNeighbor = data.table(lakeNeighbor)
+
+ggplot(lakeNeighbor, aes(avgTP)) + geom_density()
+outlierReplace(lakeNeighbor, "avgTP", which(avgTP > 1), NA)
+ggplot(lakeNeighbor, aes(EMVTotal_w)) + geom_density()
+outlierReplace(lakeNeighbor, "EMVTotal_w", which(EMVTotal_w > 1.0e+07), NA)
+ggplot(lakeNeighbor, aes(EMV_Total_agr)) + geom_density() 
+outlierReplace(lakeNeighbor, "EMV_Total_agr", which(EMV_Total_agr >70000), NA)
+ggplot(lakeNeighbor, aes(EMV_Total_res)) + geom_density() 
+outlierReplace(lakeNeighbor, "EMV_Total_res", which(EMV_Total_res >7000000), NA)
+ggplot(lakeNeighbor, aes(EMV_Total_com)) + geom_density() 
+outlierReplace(lakeNeighbor, "EMV_Total_com", which(EMV_Total_com >500000), NA)
+ggplot(lakeNeighbor, aes(EMV_Total_ind)) + geom_density() 
+outlierReplace(lakeNeighbor, "EMV_Total_ind", which(EMV_Total_ind >3332700), NA)
+ggplot(lakeNeighbor, aes(EMV_Total_greenY)) + geom_density() 
+outlierReplace(lakeNeighbor, "EMV_Total_greenY", which(EMV_Total_greenY >70000), NA)
+```
+
+
+#filter out lakes with more than 6 years data 
+```{r, echo = FALSE}
+efilter = lakeNeighbor%>%
+  group_by(entity)%>%
+  summarise(n=n())%>%
+  filter(n>6)
+lakeNeighbor = inner_join(lakeNeighbor,efilter, on = "entity")
+```
+
+#use EMVTotal as the predictor and test fix effects
+```{r}
+#test poolability
+pool = plm(avgTP ~ avgTP_lag + EMVTotal_w  + PRCP + nearwinter_snow, data = lakeNeighbor, index = c("entity", "year"), model = "pooling")
+fix_e = plm(avgTP ~ avgTP_lag + EMVTotal_w + PRCP + nearwinter_snow, data = lakeNeighbor, index = c("entity", "year"), model = "within", effect = "individual")
+
+pooltest(pool, fix_e)
+##pool model is not suitable 
+
+
+#test individual and time effect
+plmtest(pool, effect = "individual")
+## individual effect is significant
+plmtest(pool, effect = "time")
+## time effect is significant 
+plmtest(pool, effect = "twoway")
+##twoway effect is significant 
+
+#test random effect 
+fix = plm(avgTP ~ avgTP_lag + EMVTotal_w  + PRCP + nearwinter_snow, data = lakeNeighbor, index = c("entity", "year"), model = "within")
+random = plm(avgTP ~ avgTP_lag + EMVTotal_w  + PRCP + nearwinter_snow, data = lakeNeighbor, index = c("entity", "year"), model = "random")
+phtest(fix, random)
+##fix effect is better than random effect
+
+#test serial correlation
+pwtest(avgTP ~ EMVTotal_w  + PRCP + nearwinter_snow, data = lakeNeighbor)
+##there are unobserved individual effect that may introduce bias when using fixed effect
+pwtest(avgTP ~ avgTP_lag + EMVTotal_w  + PRCP + nearwinter_snow, data = lakeNeighbor)
+##add lag term of the dependant variable as instrument alleviated unobserved individual effect
+```
+
+#use two way fixed effect to test the effect of EMVTotal on avgTP
+```{r}
+fix_te = plm(avgTP ~ avgTP_lag + EMVTotal_w  + PRCP + nearwinter_snow, data = lakeNeighbor, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+
+fix_te = plm(avgDepth ~ avgDepth_lag + EMVTotal_w  + PRCP + nearwinter_snow, data = lakeNeighbor, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+
+fix_te = plm(avgGrade ~ avgGrade_lag + EMVTotal_w  + PRCP + nearwinter_snow, data = lakeNeighbor, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+
+fix_te = plm(avgRec ~ avgRec_lag + EMVTotal_w  + PRCP + nearwinter_snow, data = lakeNeighbor, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+```
+
+#By use type EMV's effect on avgTP
+## all in one
+```{r}
+fix_te = plm(avgTP ~ avgTP_lag + EMVTotal_w + EMV_Total_agr + EMV_Total_com + EMV_Total_ind + EMV_Total_res + PRCP + nearwinter_snow, data = lakeNeighbor, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+```
+industrial negative 
+
+##Agriculture
+```{r}
+Ln_agr = lakeNeighbor%>%filter(EMV_Total_agr > 0)
+
+fix_te = plm(avgTP ~ avgTP_lag + EMV_Total_agr + PRCP + nearwinter_snow, data = Ln_agr, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+
+fix_te = plm(avgDepth ~ avgDepth_lag + EMV_Total_agr + PRCP + nearwinter_snow, data = Ln_agr, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+```
+
+
+##residential
+```{r}
+Ln_res = lakeNeighbor%>%filter(EMV_Total_res > 0)
+
+fix_te = plm(avgTP ~ avgTP_lag + EMV_Total_res + PRCP + nearwinter_snow, data =  Ln_res, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+
+fix_te = plm(avgDepth ~ avgDepth_lag + EMV_Total_res + PRCP + nearwinter_snow, data =  Ln_res, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+```
+
+
+##commercial
+```{r}
+Ln_com = lakeNeighbor%>%filter(EMV_Total_com > 0)
+
+fix_te = plm(avgTP ~ avgTP_lag + EMV_Total_com + PRCP + nearwinter_snow, data =  Ln_com, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+
+fix_te = plm(avgDepth ~ avgDepth_lag + EMV_Total_com + PRCP + nearwinter_snow, data =  Ln_com, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+```
+
+##industrial
+```{r}
+Ln_ind = lakeNeighbor%>%filter(EMV_Total_ind > 0)
+
+fix_te = plm(avgTP ~ avgTP_lag + EMV_Total_ind + PRCP + nearwinter_snow, data =  Ln_ind, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+
+fix_te = plm(avgDepth ~ avgDepth_lag + EMV_Total_ind + PRCP + nearwinter_snow, data =  Ln_ind, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+```
+
+##greenY
+```{r}
+fix_te = plm(avgTP ~ avgTP_lag + EMV_Total_greenY + PRCP + nearwinter_snow, data =  lakeNeighbor, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+
+fix_te = plm(avgDepth ~ avgDepth_lag + EMV_Total_greenY + PRCP + nearwinter_snow, data =  lakeNeighbor, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+```
+
+#By county
+##Create by county subset
+```{r}
+lakeNeighbor%>%group_by(COUNTY)%>%summarise(n=n())
+
+Carver = lakeNeighbor%>%filter(COUNTY == "Carver")
+Dakota = lakeNeighbor%>%filter(COUNTY == "Dakota")
+Hennepin = lakeNeighbor%>%filter(COUNTY == "Hennepin")
+Washington = lakeNeighbor%>%filter(COUNTY == "Washington")
+Scott = lakeNeighbor%>%filter(COUNTY == "Scott")
+```
+
+##Carver
+```{r}
+ggplot() + geom_point(data = Carver, aes(x = year, y = avgTP,na.rm = TRUE))
+ggplot() + geom_point(data = Carver, aes(x = year, y = EMVTotal_w))
+ggplot() + geom_point(data = Carver, aes(x = year, y = EMV_Total_ind))
+ggplot() + geom_point(data = Carver, aes(x = year, y = EMV_Total_com))
+ggplot() + geom_point(data = Carver, aes(x = year, y = EMV_Total_res))
+
+fix_te = plm(avgTP ~ avgTP_lag + EMVTotal_w + EMV_Total_agr + EMV_Total_com + EMV_Total_ind + EMV_Total_res + PRCP + nearwinter_snow, data = Carver, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+```
+
+
+
+#By Watershed
+##Create by county subset
+```{r}
+lakeNeighbor%>%group_by(MAJOR_WATERSHED)%>%summarise(n=n())
+
+LMR = lakeNeighbor%>%filter(MAJOR_WATERSHED == "Lower Minnesota River")
+LSCR = lakeNeighbor%>%filter(MAJOR_WATERSHED == "Lower St. Croix River")
+MRTC = lakeNeighbor%>%filter(MAJOR_WATERSHED == "Mississippi River - Twin Cities")
+```
+
+## Mississippi River - Twin Cities
+```{r}
+summary(MRTC)
+ggplot() + geom_point(data = MRTC, aes(x = year, y = avgTP))
+ggplot() + geom_point(data = MRTC, aes(x = year, y = EMVTotal_w))
+ggplot() + geom_point(data = MRTC, aes(x = year, y = EMV_Total_ind))
+ggplot() + geom_point(data = MRTC, aes(x = year, y = EMV_Total_com))
+ggplot() + geom_point(data = MRTC, aes(x = year, y = EMV_Total_res))
+
+fix_te = plm(avgTP ~ avgTP_lag + EMVTotal_w + EMV_Total_agr + EMV_Total_com + EMV_Total_ind + EMV_Total_res + PRCP + nearwinter_snow, data = MRTC, index = c("entity", "year"), model = "within", effect = "twoways")
+summary(fix_te)
+```
+
