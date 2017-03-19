@@ -1,0 +1,210 @@
+---
+title: "Calculating Customer Price Sensitivity Using Discrete Choice Model and Market-level Data "
+author: "Yurong Fan""
+date: "03/04/2017"
+---
+
+# Data Processing
+## Merge catsales with zone by store
+```{r}
+library(dplyr)
+library(ggplot2)
+library(AER)
+library(stargazer)
+
+#load data and merge
+catsales<-read.csv("catsales_RefrigOJ_2017Semester.csv")
+zone <- read.csv("zone.csv")
+
+catsales <- catsales%>%
+  left_join(zone, by = "store")%>%
+  mutate(zone = as.factor(zone))
+```
+
+#Comparing Statistics for Given and Not Given Zones
+```{r}
+givenzones <- catsales[!is.na(catsales$zone),c("reprice","resales","move","prom","whprice")]
+nazones <- catsales[is.na(catsales$zone),c("reprice","resales","move","prom","whprice")]
+```
+
+```{r}
+ggplot() + geom_density(aes(x =reprice, fill= "blue"), alpha= 0.5, data = givenzones) + 
+  geom_density(aes(x = reprice, fill = "green"), alpha=0.5, data = nazones) + 
+  scale_fill_discrete(name = "Zones",labels=c("Not Given", "Given")) + 
+  xlab("Price") + ylab("Distribution")
+
+ggplot() + geom_density(aes(x =resales, fill= "blue"), alpha= 0.5, data = givenzones) + 
+  geom_density(aes(x = resales, fill = "green"), alpha=0.5, data = nazones) + 
+  xlim(0,300) + scale_fill_discrete(name= "Zones", labels=c("Not Given", "Given")) + 
+  xlab("Sales") + ylab("Distribution")
+```
+
+
+#Removes rows where store has NA in zone column
+```{r}
+catsales = filter(catsales, !is.na(zone))
+```
+
+#Exploratory Data Analysis
+## Basic questions
+```{r}
+#how many weeks? 
+length(unique(catsales$week))
+
+#how many stores?
+length(unique(catsales$store))
+
+#how many brands and products for each brand
+upc_per_brand = catsales%>%
+  group_by(unibranddff)%>%
+  summarise(upc_num = n_distinct(upc))%>%
+  ungroup()
+
+upc_per_brand
+```
+
+
+
+## Market Share
+```{r}
+#market share  
+whole_catsale <- catsales%>%
+  group_by(week)%>%
+  summarise(whole_cat_sales = sum(resales))
+
+byzone_catsale <- catsales%>%
+  group_by(week,zone)%>%
+  summarise(zone_cat_sales = sum(resales))
+
+catsales <- catsales%>%
+  left_join(whole_catsale, by = "week")%>%
+  left_join(byzone_catsale, by = c("week","zone"))%>%
+  mutate(byzone_market_share = resales/zone_cat_sales * 100)%>%
+  mutate(whole_market_share = resales/whole_cat_sales * 100)
+
+# market share by brand in the whole market
+brand_mkt_shr = catsales%>%
+  group_by(unibranddff,week)%>%
+  summarise(market_share_bybrand = sum(whole_market_share))%>%
+  group_by(unibranddff)%>%
+  summarise(avg_market_share_bybrand = round(mean(market_share_bybrand),2))%>%
+  arrange(desc(avg_market_share_bybrand))
+
+# by brand market share in the whole market over time
+brand_share_overtime <- catsales%>%
+  group_by(unibranddff,week)%>%
+  summarise(brand_market_share = sum(whole_market_share))
+
+
+# market share by brand by zone
+catsales%>%
+  group_by(unibranddff,week,zone)%>%
+  summarise(market_share_bybrand = sum(byzone_market_share))%>%
+  group_by(unibranddff,zone)%>%
+  summarise(avg_market_share_bybrand = mean(market_share_bybrand))%>%
+  arrange(desc(zone, avg_market_share_bybrand))
+
+```
+
+
+#Creates weighted price, price per ounce and price per move(number of actual items sold) columns
+```{r}
+catsales$weight_reprice = catsales$reprice*catsales$resales
+catsales$reprice_move = catsales$reprice*catsales$move
+```
+
+
+#Aggregate Data
+```{r}
+
+#further aggregate by brand using simple average for price
+aggcatsales <- catsales%>%
+  group_by(zone,week,unibranddff)%>%
+  summarise(reprice = mean(reprice),
+            resales = sum(resales),
+            prom = mean(prom),
+            whprice = mean(whprice),
+            move = sum(move),
+            market_share = sum(byzone_market_share),
+            weight_reprice = sum(weight_reprice)/sum(resales),
+            reprice_move = sum(reprice_move)/sum(move))%>%
+  ungroup()
+
+
+#transform baseline 
+other_share <- aggcatsales%>%
+  filter(unibranddff == "Other")%>%
+  select(zone, week, market_share)
+
+names(other_share)[3] = "other_share"
+
+aggcatsales <- aggcatsales%>%
+  left_join(other_share, by = c('zone', 'week'))
+```
+
+
+#Build Aggregate-level Demand Model To Calculate Customer Price Sensitivity
+#Change price messurements for model robustness check 
+
+## Using OLS with price and promotion as product characteristics
+```{r}
+#generate dependent variable in dcm 
+aggcatsales$Y = log(aggcatsales$market_share/aggcatsales$other_share, base = exp(1))
+
+#Using OLS with price and promotion as product characteristics
+dcm1 <- lm(data = aggcatsales, Y ~ reprice + prom)
+```
+
+## Using OLS with price and promotion as product characteristics and brand dummies.
+```{r}
+dcm2 <- lm(data = aggcatsales, Y ~ reprice + prom + factor(unibranddff))
+```
+
+## Using OLS with price and promotion as product characteristics and brand and zone dummies.
+```{r}
+dcm3 <- lm(data = aggcatsales, Y ~ reprice + prom 
+           + factor(unibranddff) + factor(zone))
+```
+
+##Estimate the models of 1, 2 and 3 using wholesale costs as an instrument for price.
+```{r}
+dcm4 <- ivreg(Y ~ reprice + prom | whprice + prom, data = aggcatsales)
+dcm5 <- ivreg(Y ~ reprice + prom + factor(unibranddff) | whprice + prom 
+              + factor(unibranddff), data = aggcatsales)
+dcm6 <- ivreg(Y ~ reprice + prom + factor(unibranddff) 
+              + factor(zone) | whprice + prom + factor(unibranddff) 
+              + factor(zone), data = aggcatsales)
+```
+
+##Estimate the models of 1, 2 and 3 using Hausman instruments (average price in other zones)
+```{r}
+# generate average price in other zones
+IV_other_zone_price <- aggcatsales%>%
+  group_by(week, unibranddff)%>%
+  summarise(tot_price = sum(reprice),
+            num_zone = n_distinct(zone))%>%
+  left_join(aggcatsales, by = c("week", "unibranddff"))%>%
+  mutate(other_zone_price = (tot_price - reprice)/(num_zone - 1))%>%
+  select(week, unibranddff, zone, other_zone_price )
+
+aggcatsales <- aggcatsales%>%
+  left_join(IV_other_zone_price, by = c("week", "unibranddff","zone"))
+
+
+dcm7 <- ivreg(Y ~ reprice + prom | other_zone_price + prom, data = aggcatsales)
+dcm8 <- ivreg(Y ~ reprice + prom + factor(unibranddff) | other_zone_price 
+              + prom + factor(unibranddff), data = aggcatsales)
+dcm9 <-ivreg(Y ~ reprice + prom + factor(unibranddff) + factor(zone) | other_zone_price 
+             + prom + factor(unibranddff) + factor(zone), data = aggcatsales)
+```
+
+## Summarize Model Result In One Table
+```{r}
+stargazer(dcm1,dcm2,dcm3,dcm4,dcm5,dcm6,dcm7,dcm8,dcm9, 
+          type = "text", 
+          omit = c("zone","Constant"), 
+          covariate.labels=c("reprice", "prom", "FLDAGOLD", "FLORIDA", "HH", "MMAID", "Other", "TROP"),
+          out = "model_123.txt", float.env = "sidewaystable")
+
+```
+
