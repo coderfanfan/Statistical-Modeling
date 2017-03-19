@@ -4,7 +4,7 @@ The sample data comes from Dominick's Database
 https://research.chicagobooth.edu/kilts/error?item=%2fkilts%2fmarketing-%C2%AD%E2%80%90databases%2fdominicks&user=ad%5cAnonymous&site=research
 
 The folder contains:
-1. code
+1. codes.Rmd
 2. zones: dataset 1
-3. catsales_RefrigOJ_2017Semester: sample market share dataset
-4. result: model result with estimation of price sensitivity
+3. catsales_RefrigOJ_2017Semester_sample: sample market share dataset
+4. Model Result: model result with estimation of price sensitivity
