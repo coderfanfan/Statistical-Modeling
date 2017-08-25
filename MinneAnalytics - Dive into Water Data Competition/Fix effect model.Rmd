@@ -10,7 +10,6 @@ knitr::opts_chunk$set(echo = TRUE)
 
 #Preperation
 ```{r, echo = FALSE}
-setwd('C:/Users/Fanfan/Desktop/Water/data')
 lakeNeighbor = read.csv("allLakeNeighborhood_panel_dt_v6_1000_TP.csv")
 library(dplyr)
 library(data.table)
